@@ -519,6 +519,19 @@
         <span class="daily-title">⚙️ Configuración</span>
       </div>
       <div class="config-row">
+        <span class="config-label">Modo</span>
+        <select class="config-select" id="study-mode" onchange="updateSessionSizeOptions()">
+          <option value="new">🆕 Solo nuevas</option>
+          <option value="review" selected>🔄 Solo a repasar</option>
+          <option value="mastered">🏆 Solo dominadas</option>
+          <option value="mix">🎯 Repasar + Dominadas</option>
+        </select>
+      </div>
+      <div id="mode-count-banner" style="background:#f0fff4;border:1.5px solid var(--verde);border-radius:10px;padding:8px 14px;margin:8px 0;font-size:0.85rem;font-weight:700;color:var(--verde);display:flex;justify-content:space-between;align-items:center;">
+        <span id="mode-count-label">Disponibles en este modo:</span>
+        <span id="mode-count-num" style="font-size:1.1rem">—</span>
+      </div>
+      <div class="config-row">
         <span class="config-label">Preguntas por sesión</span>
         <select class="config-select" id="session-size">
           <option value="5">5 preguntas</option>
@@ -526,24 +539,15 @@
           <option value="15">15 preguntas</option>
           <option value="20">20 preguntas</option>
           <option value="30">30 preguntas</option>
-        </select>
-      </div>
-      <div class="config-row">
-        <span class="config-label">Modo</span>
-        <select class="config-select" id="study-mode">
-          <option value="new">Solo nuevas 🆕</option>
-          <option value="review">Solo a repasar 🔄</option>
-          <option value="all" selected>Todas mezcladas</option>
-          <option value="weak">Las que más fallo ❌</option>
-          <option value="mastered">Solo dominadas 🏆</option>
+          <option value="all">Todas del modo</option>
         </select>
       </div>
     </div>
 
+    <button class="btn-primary" onclick="startStudySession()" style="margin-bottom:20px">🚀 Iniciar sesión de estudio</button>
+
     <h2 class="section-title">📂 Estudiar por categoría</h2>
     <div id="study-categories-list"></div>
-
-    <button class="btn-primary" onclick="startStudySession()">🚀 Iniciar sesión de estudio</button>
   </div>
 
   <!-- Flashcard activa -->
@@ -1168,90 +1172,126 @@ function updateInicio() {
 // ============================================================
 // ESTUDIO (FLASHCARDS)
 // ============================================================
-function updateStudyMenu() {
-  document.getElementById('study-menu').style.display = 'block';
-  document.getElementById('study-active').style.display = 'none';
 
+// Filtra preguntas segun el modo seleccionado
+function getPoolByMode(questions, mode) {
+  if (mode === 'new')      return questions.filter(q => state.known[q.id] === undefined || state.known[q.id] === null);
+  if (mode === 'review')   return questions.filter(q => state.known[q.id] === false);
+  if (mode === 'mastered') return questions.filter(q => state.known[q.id] === true);
+  if (mode === 'mix') {
+    // Repasar (con mas errores primero) + Dominadas (con mas intentos primero), 2:1
+    const toReview = questions.filter(q => state.known[q.id] === false)
+      .sort((a,b) => (state.errors[b.id]||0) - (state.errors[a.id]||0));
+    const mastered = questions.filter(q => state.known[q.id] === true)
+      .sort((a,b) => (state.attempts[b.id]||0) - (state.attempts[a.id]||0));
+    const mixed = [];
+    let ri = 0, mi = 0;
+    while (ri < toReview.length || mi < mastered.length) {
+      if (ri < toReview.length) mixed.push(toReview[ri++]);
+      if (ri < toReview.length) mixed.push(toReview[ri++]);
+      if (mi < mastered.length) mixed.push(mastered[mi++]);
+    }
+    return mixed;
+  }
+  return questions;
+}
+
+// Actualiza el contador del modo y la lista de categorias
+function updateSessionSizeOptions() {
+  const mode = document.getElementById('study-mode').value;
+  const pool = getPoolByMode(getAllQuestions(), mode);
+  const count = pool.length;
+  const labels = { new: '🆕 Nuevas', review: '🔄 A repasar', mastered: '🏆 Dominadas', mix: '🎯 Repasar + Dominadas' };
+  document.getElementById('mode-count-label').textContent = (labels[mode] || 'Disponibles') + ':';
+  document.getElementById('mode-count-num').textContent = count + ' preguntas';
+  const banner = document.getElementById('mode-count-banner');
+  const numEl  = document.getElementById('mode-count-num');
+  const lblEl  = document.getElementById('mode-count-label');
+  if (count === 0) {
+    banner.style.background = '#fff5f5'; banner.style.borderColor = 'var(--rojo)';
+    numEl.style.color = 'var(--rojo)';   lblEl.style.color = 'var(--rojo)';
+  } else {
+    banner.style.background = '#f0fff4'; banner.style.borderColor = 'var(--verde)';
+    numEl.style.color = 'var(--verde)';  lblEl.style.color = 'var(--verde)';
+  }
+  const sel = document.getElementById('session-size');
+  const allOpt = sel ? sel.querySelector('option[value="all"]') : null;
+  if (allOpt) allOpt.textContent = 'Todas del modo (' + count + ')';
+  updateStudyCategoryList();
+}
+
+function updateStudyCategoryList() {
+  const mode = document.getElementById('study-mode').value;
   const list = document.getElementById('study-categories-list');
+  if (!list) return;
   list.innerHTML = '';
   CATEGORIES.forEach(cat => {
-    const catKnown = cat.questions.filter((q, i) => state.known[cat.id + '_' + i]).length;
+    const catQs   = cat.questions.map((q,i) => ({...q, id: cat.id+'_'+i, catId: cat.id}));
+    const catPool = getPoolByMode(catQs, mode);
+    const catKnown = cat.questions.filter((_,i) => state.known[cat.id+'_'+i] === true).length;
     const pct = Math.round(catKnown / cat.questions.length * 100);
+    const bc  = catPool.length === 0 ? '#fff5f5'     : '#f0fff4';
+    const btc = catPool.length === 0 ? 'var(--rojo)' : 'var(--verde)';
     const btn = document.createElement('div');
     btn.className = 'card-simple';
-    btn.style.cursor = 'pointer';
-    btn.style.marginBottom = '8px';
-    btn.innerHTML = `
-      <div style="display:flex;justify-content:space-between;align-items:center">
-        <span style="font-weight:700">${cat.icon} ${cat.name}</span>
-        <span class="badge badge-${pct===100?'green':'blue'}">${catKnown}/${cat.questions.length}</span>
-      </div>
-      <div style="margin-top:8px;height:6px;background:#e2e8f0;border-radius:99px;overflow:hidden">
-        <div style="height:100%;width:${pct}%;background:linear-gradient(to right,var(--verde),#00a86b);border-radius:99px"></div>
-      </div>
-    `;
+    btn.style.cssText = 'cursor:pointer;margin-bottom:8px';
+    btn.innerHTML =
+      '<div style="display:flex;justify-content:space-between;align-items:center">'
+      + '<span style="font-weight:700">' + cat.icon + ' ' + cat.name + '</span>'
+      + '<div style="display:flex;gap:6px;align-items:center">'
+      + '<span style="font-size:0.78rem;background:' + bc + ';color:' + btc + ';font-weight:700;padding:2px 8px;border-radius:99px;border:1.5px solid ' + btc + '">'
+      + catPool.length + ' en modo</span>'
+      + '<span class="badge badge-' + (pct===100?'green':'blue') + '">' + catKnown + '/' + cat.questions.length + '</span>'
+      + '</div></div>'
+      + '<div style="margin-top:8px;height:6px;background:#e2e8f0;border-radius:99px;overflow:hidden">'
+      + '<div style="height:100%;width:' + pct + '%;background:linear-gradient(to right,var(--verde),#00a86b);border-radius:99px"></div></div>';
     btn.onclick = () => startCategoryStudy(cat.id);
     list.appendChild(btn);
   });
 }
 
-function startCategoryStudy(catId) {
-  const mode = document.getElementById('study-mode') ? document.getElementById('study-mode').value : 'all';
-  const size = parseInt(document.getElementById('session-size') ? document.getElementById('session-size').value : '10');
+function updateStudyMenu() {
+  document.getElementById('study-menu').style.display = 'block';
+  document.getElementById('study-active').style.display = 'none';
+  updateSessionSizeOptions();
+}
 
+function startCategoryStudy(catId) {
+  const mode    = document.getElementById('study-mode') ? document.getElementById('study-mode').value : 'review';
+  const sizeVal = document.getElementById('session-size') ? document.getElementById('session-size').value : '10';
   const cat = CATEGORIES.find(c => c.id === catId);
   if (!cat) return;
-
   studyCategoryId = catId;
-  let pool = cat.questions.map((q, i) => ({ ...q, id: catId + '_' + i, catId }));
-
-  if (mode === 'new') pool = pool.filter(q => !state.known[q.id]);
-  else if (mode === 'review') pool = pool.filter(q => state.known[q.id] === false);
-  else if (mode === 'weak') pool = pool.filter(q => (state.errors[q.id] || 0) > 0).sort((a,b) => (state.errors[b.id]||0)-(state.errors[a.id]||0));
-  else if (mode === 'mastered') pool = pool.filter(q => state.known[q.id] === true);
-
-  if (pool.length === 0) {
-    showToast('¡No hay preguntas en este modo! Prueba otro modo.');
-    return;
-  }
-
-  studyQueue = shuffle(pool).slice(0, size);
-  studyIdx = 0;
-  studyCorrect = 0;
-  studyTotal = studyQueue.length;
-
+  const catQs = cat.questions.map((q,i) => ({...q, id: catId+'_'+i, catId}));
+  const pool  = getPoolByMode(catQs, mode);
+  if (pool.length === 0) { showToast('¡No hay preguntas en este modo para esta categoría!'); return; }
+  const size = sizeVal === 'all' ? pool.length : parseInt(sizeVal);
+  studyQueue  = shuffle(pool).slice(0, size);
+  studyIdx = 0; studyCorrect = 0; studyTotal = studyQueue.length;
   showScreen('estudio');
   document.getElementById('study-menu').style.display = 'none';
   document.getElementById('study-active').style.display = 'block';
   document.getElementById('session-complete-msg').style.display = 'none';
   document.getElementById('study-cat-title').textContent = cat.icon + ' ' + cat.name;
-
   renderFlashcard();
 }
 
 function startStudySession() {
-  const mode = document.getElementById('study-mode').value;
-  const size = parseInt(document.getElementById('session-size').value);
-
-  const all = getAllQuestions();
-  let pool = all;
-  if (mode === 'new') pool = all.filter(q => !state.known[q.id]);
-  else if (mode === 'review') pool = all.filter(q => state.known[q.id] === false);
-  else if (mode === 'weak') pool = all.filter(q => (state.errors[q.id]||0) > 0).sort((a,b) => (state.errors[b.id]||0)-(state.errors[a.id]||0));
-  else if (mode === 'mastered') pool = all.filter(q => state.known[q.id] === true);
-
-  if (pool.length === 0) { showToast('¡No hay preguntas dominadas todavía! Estudia primero y marca las que sabes.'); return; }
-
+  const mode    = document.getElementById('study-mode').value;
+  const sizeVal = document.getElementById('session-size').value;
+  const pool = getPoolByMode(getAllQuestions(), mode);
+  if (pool.length === 0) {
+    const msgs = { new: '¡No hay preguntas nuevas! Ya las viste todas.', review: '¡No tienes preguntas a repasar!', mastered: '¡Aún no dominas ninguna!', mix: '¡No hay preguntas disponibles!' };
+    showToast(msgs[mode] || '¡No hay preguntas!'); return;
+  }
+  const size = sizeVal === 'all' ? pool.length : parseInt(sizeVal);
   studyCategoryId = 'all';
-  studyQueue = shuffle(pool).slice(0, size);
-  studyIdx = 0;
-  studyCorrect = 0;
-  studyTotal = studyQueue.length;
-
+  studyQueue  = shuffle(pool).slice(0, size);
+  studyIdx = 0; studyCorrect = 0; studyTotal = studyQueue.length;
   document.getElementById('study-menu').style.display = 'none';
   document.getElementById('study-active').style.display = 'block';
   document.getElementById('session-complete-msg').style.display = 'none';
-  document.getElementById('study-cat-title').textContent = '📚 Sesión mezclada';
+  document.getElementById('study-cat-title').textContent = '📚 Sesión de estudio';
   renderFlashcard();
 }
 
@@ -1282,12 +1322,11 @@ function flipCard() {
 
 function markAnswer(correct) {
   const q = studyQueue[studyIdx];
-  const mode = document.getElementById('study-mode') ? document.getElementById('study-mode').value : 'all';
-  if (!correct && mode === 'mastered') {
-    // En modo "Solo dominadas": si fallas, la quita de dominadas y la agrega a falladas
+  const mode = document.getElementById('study-mode') ? document.getElementById('study-mode').value : 'review';
+  if (!correct && (mode === 'mastered' || mode === 'mix')) {
     state.known[q.id] = false;
     state.errors[q.id] = (state.errors[q.id] || 0) + 1;
-    showToast('❌ Quitada de dominadas y agregada a falladas');
+    showToast('❌ Quitada de dominadas, marcada a repasar');
   } else {
     state.known[q.id] = correct;
     if (!correct) state.errors[q.id] = (state.errors[q.id] || 0) + 1;
@@ -1331,8 +1370,9 @@ function endStudySession() {
 function startDailySession() {
   showScreen('estudio');
   setTimeout(() => {
-    document.getElementById('study-mode').value = 'all';
+    document.getElementById('study-mode').value = 'review';
     document.getElementById('session-size').value = '10';
+    updateSessionSizeOptions();
     startStudySession();
   }, 100);
 }
@@ -1357,12 +1397,61 @@ function updateQuizMenu() {
 }
 
 function generateQuizOptions(correctQ, allQuestions) {
-  // Generar 3 distractores de la misma categoría o generales
-  const same = allQuestions.filter(q => q.catId === correctQ.catId && q.id !== correctQ.id);
-  const pool = shuffle(same.length >= 3 ? same : allQuestions.filter(q => q.id !== correctQ.id));
-  const distractors = pool.slice(0, 3).map(q => q.a);
-  const options = shuffle([correctQ.a, ...distractors]);
-  return options;
+  const correct = correctQ.a;
+  const used = new Set([correct]);
+  const candidates = [];
+
+  // Helper: extraer primer año de un texto
+  function extractYear(text) {
+    const m = text.match(/\b(1[3-9]\d\d|20[012]\d)\b/);
+    return m ? m[1] : null;
+  }
+
+  // Estrategia 1: si la respuesta tiene año, sustituir con años de OTRAS preguntas
+  const yrCorrect = extractYear(correct);
+  if (yrCorrect) {
+    const otherYears = [...new Set(
+      allQuestions.map(q => extractYear(q.a)).filter(y => y && y !== yrCorrect)
+    )];
+    shuffle(otherYears).slice(0, 2).forEach(y => {
+      const variant = correct.replace(yrCorrect, y);
+      if (!used.has(variant)) { candidates.push(variant); used.add(variant); }
+    });
+  }
+
+  // Estrategia 2: respuestas de la misma categoria (más plausibles)
+  const sameCat = shuffle(allQuestions.filter(q => q.catId === correctQ.catId && q.id !== correctQ.id));
+  for (const q of sameCat) {
+    if (!used.has(q.a) && candidates.length < 5) { candidates.push(q.a); used.add(q.a); }
+  }
+
+  // Estrategia 3: banco de distractores temáticos por tipo de respuesta
+  const bancoPersonas   = ['Agustín de Iturbide','Porfirio Díaz','Victoriano Huerta','Lázaro Cárdenas','Venustiano Carranza','Sebastián Lerdo de Tejada','Guadalupe Victoria','Ignacio Comonfort','Álvaro Obregón','Plutarco Elías Calles'];
+  const bancoFechas     = ['16 de septiembre de 1810','20 de noviembre de 1910','5 de febrero de 1917','13 de agosto de 1521','27 de septiembre de 1821','5 de mayo de 1862','2 de octubre de 1968','24 de febrero de 1821','10 de abril de 1919','19 de junio de 1867'];
+  const bancoCiudades   = ['Guadalajara','Monterrey','Puebla de Zaragoza','Oaxaca de Juárez','Morelia','Mérida','Santiago de Querétaro','Xalapa-Enríquez','Hermosillo','Villahermosa'];
+  const bancoEstados    = ['Jalisco','Oaxaca','Chiapas','Veracruz','Puebla','Guanajuato','Michoacán de Ocampo','Guerrero','Tabasco','Campeche','Tamaulipas','Yucatán'];
+  const bancoNumeros    = ['6','12','32','64','128','500','136','193','68','11','2','1824'];
+  const bancoLugares    = ['Teotihuacán','Monte Albán','Chichén Itzá','Palenque','La Venta','Tlatelolco','Chapultepec','Tenochtitlán','Tula','Calakmul'];
+
+  let banco = bancoPersonas;
+  if (/\b(1[3-9]\d\d|20[012]\d)\b/.test(correct) || /de \w+ de \d{4}/.test(correct)) banco = bancoFechas;
+  else if (/estado|jalisco|oaxaca|chiapas|veracruz|puebla|guerrero|tabasco|campeche|tamaulipas|yucatán/i.test(correct)) banco = bancoEstados;
+  else if (/guadalajara|monterrey|mérida|morelia|hermosillo|villahermosa|xalapa|querétaro/i.test(correct)) banco = bancoCiudades;
+  else if (/^\d+$/.test(correct.trim()) || /\b(500|128|136|32|11|68)\b/.test(correct)) banco = bancoNumeros;
+  else if (/teotihuacan|monte albán|chichén|palenque|venta|tlatelolco|tenochtitlán|tula|calakmul/i.test(correct)) banco = bancoLugares;
+  else if (/hidalgo|zapata|villa|madero|juárez|iturbide|carranza|calles|cárdenas|cortés|moctezuma|cuauhtémoc/i.test(correct)) banco = bancoPersonas;
+
+  for (const d of shuffle(banco)) {
+    if (!used.has(d) && candidates.length < 5) { candidates.push(d); used.add(d); }
+  }
+
+  // Estrategia 4: otras categorias como fallback
+  const otherCat = shuffle(allQuestions.filter(q => q.catId !== correctQ.catId && q.id !== correctQ.id));
+  for (const q of otherCat) {
+    if (!used.has(q.a) && candidates.length < 5) { candidates.push(q.a); used.add(q.a); }
+  }
+
+  return shuffle([correct, ...candidates.slice(0, 3)]);
 }
 
 function startQuiz() {
